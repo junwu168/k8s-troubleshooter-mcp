@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-troubleshooter-mcp
+  namespace: k8s-troubleshooter
+  labels:
+    app.kubernetes.io/name: k8s-troubleshooter-mcp
+    app.kubernetes.io/part-of: k8s-troubleshooter
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: k8s-troubleshooter-mcp
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
