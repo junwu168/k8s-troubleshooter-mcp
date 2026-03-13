@@ -40,6 +40,8 @@ mcp = FastMCP(
     json_response=True,
     lifespan=create_mcp_lifespan(settings),
     streamable_http_path="/",
+    host=settings.HOST,
+    port=settings.PORT,
 )
 register_tools(mcp)
 mcp_http_app = mcp.streamable_http_app()
