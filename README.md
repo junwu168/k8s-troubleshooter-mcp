@@ -65,6 +65,8 @@ kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/serviceaccount.yaml
 kubectl apply -f k8s/role.yaml
 kubectl apply -f k8s/rolebinding.yaml
+kubectl apply -f k8s/clusterrole.yaml
+kubectl apply -f k8s/clusterrolebinding.yaml
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/service.yaml
 
@@ -82,7 +84,7 @@ Environment variables:
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `PORT` | `8000` | Server port |
 | `HOST` | `0.0.0.0` | Server host |
-| `NAMESPACE` | `default` | Default namespace for operations |
+| `NAMESPACE` | `k8s-troubleshooter` | Default namespace for operations |
 | `KUBECONFIG_PATH` | - | Path to kubeconfig (optional, uses in-cluster config if not set) |
 
 ## Architecture
