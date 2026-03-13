@@ -1,174 +1,187 @@
-"""MCP tools for Kubernetes troubleshooting."""
+# pyright: basic, reportUnusedFunction=false
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import Any, Callable
 
-from mcp.server.fastmcp import Context
+from mcp.server.fastmcp import Context, FastMCP
 
-if TYPE_CHECKING:
-    from .k8s_client import K8sClient
-    from .lifecycle import AppContext
 
 logger = logging.getLogger(__name__)
 
 
-def _get_k8s_client(ctx: Context) -> "K8sClient":
-    """Extract K8s client from MCP context."""
-    app_ctx: AppContext = ctx.request_context.lifespan_context
-    return app_ctx.k8s_client
+def _serialize(value: Any) -> str:
+    if isinstance(value, list):
+        payload = [_to_jsonable(item) for item in value]
+    else:
+        payload = _to_jsonable(value)
+    return json.dumps(payload, default=str)
 
 
-async def list_pods(
-    namespace: str,
-    label_selector: str | None = None,
-    ctx: Context = None,
-) -> str:
-    """List pods in a namespace with optional label selector.
-
-    Args:
-        namespace: The Kubernetes namespace to list pods from
-        label_selector: Optional label selector to filter pods (e.g., "app=nginx")
-    """
-    k8s = _get_k8s_client(ctx)
-    pods = k8s.list_pods(namespace, label_selector)
-    return json.dumps([pod.model_dump() for pod in pods], indent=2)
+def _to_jsonable(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {key: _to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    return value
 
 
-async def list_deployments(
-    namespace: str,
-    ctx: Context = None,
-) -> str:
-    """List deployments in a namespace.
+def _get_k8s_client(ctx: Context | None) -> Any:
+    if ctx is None or getattr(ctx, "request_context", None) is None:
+        raise RuntimeError("MCP request context is unavailable.")
 
-    Args:
-        namespace: The Kubernetes namespace to list deployments from
-    """
-    k8s = _get_k8s_client(ctx)
-    deployments = k8s.list_deployments(namespace)
-    return json.dumps([d.model_dump() for d in deployments], indent=2)
+    app_context = getattr(ctx.request_context, "lifespan_context", None)
+    if app_context is None:
+        raise RuntimeError("MCP lifespan context is unavailable.")
 
+    k8s_client = getattr(app_context, "k8s_client", None)
+    if k8s_client is not None:
+        return k8s_client
 
-async def list_services(
-    namespace: str,
-    ctx: Context = None,
-) -> str:
-    """List services in a namespace.
+    startup_error = getattr(app_context, "startup_error", None)
+    if startup_error:
+        raise RuntimeError(startup_error)
 
-    Args:
-        namespace: The Kubernetes namespace to list services from
-    """
-    k8s = _get_k8s_client(ctx)
-    services = k8s.list_services(namespace)
-    return json.dumps([s.model_dump() for s in services], indent=2)
+    raise RuntimeError("Kubernetes client is unavailable in lifespan context.")
 
 
-async def list_nodes(
-    ctx: Context = None,
-) -> str:
-    """List all nodes in the cluster."""
-    k8s = _get_k8s_client(ctx)
-    nodes = k8s.list_nodes()
-    return json.dumps([n.model_dump() for n in nodes], indent=2)
+async def _run_tool(action: str, operation: Callable[[], Any]) -> str:
+    try:
+        return _serialize(await asyncio.to_thread(operation))
+    except Exception as exc:
+        logger.exception("Failed to %s", action)
+        raise RuntimeError(f"Failed to {action}: {exc}") from exc
 
 
-async def list_events(
-    namespace: str,
-    ctx: Context = None,
-) -> str:
-    """List events in a namespace.
+def register_tools(mcp: FastMCP) -> None:
+    @mcp.tool()
+    async def list_pods(
+        namespace: str,
+        label_selector: str | None = None,
+        ctx: Context | None = None,
+    ) -> str:
+        """List pods in a namespace with optional label selector."""
 
-    Args:
-        namespace: The Kubernetes namespace to list events from
-    """
-    k8s = _get_k8s_client(ctx)
-    events = k8s.list_events(namespace)
-    return json.dumps([e.model_dump() for e in events], indent=2)
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"list pods in namespace '{namespace}'",
+            lambda: k8s.list_pods(namespace, label_selector),
+        )
+
+    @mcp.tool()
+    async def list_deployments(namespace: str, ctx: Context | None = None) -> str:
+        """List deployments in a namespace."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"list deployments in namespace '{namespace}'",
+            lambda: k8s.list_deployments(namespace),
+        )
+
+    @mcp.tool()
+    async def list_services(namespace: str, ctx: Context | None = None) -> str:
+        """List services in a namespace."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"list services in namespace '{namespace}'",
+            lambda: k8s.list_services(namespace),
+        )
+
+    @mcp.tool()
+    async def list_nodes(ctx: Context | None = None) -> str:
+        """List cluster nodes."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool("list cluster nodes", k8s.list_nodes)
+
+    @mcp.tool()
+    async def list_events(namespace: str, ctx: Context | None = None) -> str:
+        """List events in a namespace."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"list events in namespace '{namespace}'",
+            lambda: k8s.list_events(namespace),
+        )
+
+    @mcp.tool()
+    async def get_pod_logs(
+        pod_name: str,
+        namespace: str,
+        container: str | None = None,
+        tail_lines: int = 100,
+        ctx: Context | None = None,
+    ) -> str:
+        """Get pod logs with optional container selection."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"get pod logs for '{pod_name}' in namespace '{namespace}'",
+            lambda: k8s.get_pod_logs(pod_name, namespace, container, tail_lines),
+        )
+
+    @mcp.tool()
+    async def get_resource_yaml(
+        kind: str,
+        name: str,
+        namespace: str,
+        ctx: Context | None = None,
+    ) -> str:
+        """Get resource YAML for a Kubernetes object."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"get resource YAML for {kind} '{name}'",
+            lambda: k8s.get_resource_yaml(kind, name, namespace),
+        )
+
+    @mcp.tool()
+    async def describe_pod(
+        pod_name: str,
+        namespace: str,
+        ctx: Context | None = None,
+    ) -> str:
+        """Describe a pod and include related events."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"describe pod '{pod_name}' in namespace '{namespace}'",
+            lambda: k8s.describe_pod(pod_name, namespace),
+        )
+
+    @mcp.tool()
+    async def describe_deployment(
+        name: str,
+        namespace: str,
+        ctx: Context | None = None,
+    ) -> str:
+        """Describe a deployment and include related events."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"describe deployment '{name}' in namespace '{namespace}'",
+            lambda: k8s.describe_deployment(name, namespace),
+        )
+
+    @mcp.tool()
+    async def describe_service(
+        name: str,
+        namespace: str,
+        ctx: Context | None = None,
+    ) -> str:
+        """Describe a service and include related events."""
+
+        k8s = _get_k8s_client(ctx)
+        return await _run_tool(
+            f"describe service '{name}' in namespace '{namespace}'",
+            lambda: k8s.describe_service(name, namespace),
+        )
 
 
-async def get_pod_logs(
-    pod_name: str,
-    namespace: str,
-    container: str | None = None,
-    tail_lines: int = 100,
-    ctx: Context = None,
-) -> str:
-    """Get logs from a pod.
-
-    Args:
-        pod_name: Name of the pod to get logs from
-        namespace: The Kubernetes namespace where the pod exists
-        container: Optional container name (required if pod has multiple containers)
-        tail_lines: Number of lines to retrieve from the end of the logs (default: 100)
-    """
-    k8s = _get_k8s_client(ctx)
-    logs = k8s.get_pod_logs(pod_name, namespace, container, tail_lines)
-    return json.dumps(logs.model_dump(), indent=2)
-
-
-async def get_resource_yaml(
-    kind: str,
-    name: str,
-    namespace: str,
-    ctx: Context = None,
-) -> str:
-    """Get YAML representation of a Kubernetes resource.
-
-    Args:
-        kind: Resource kind (Pod, Deployment, Service, etc.)
-        name: Name of the resource
-        namespace: The Kubernetes namespace where the resource exists
-    """
-    k8s = _get_k8s_client(ctx)
-    yaml_response = k8s.get_resource_yaml(kind, name, namespace)
-    return json.dumps(yaml_response.model_dump(), indent=2)
-
-
-async def describe_pod(
-    pod_name: str,
-    namespace: str,
-    ctx: Context = None,
-) -> str:
-    """Describe a pod with details and recent events.
-
-    Args:
-        pod_name: Name of the pod to describe
-        namespace: The Kubernetes namespace where the pod exists
-    """
-    k8s = _get_k8s_client(ctx)
-    describe = k8s.describe_resource("Pod", pod_name, namespace)
-    return json.dumps(describe.model_dump(), indent=2)
-
-
-async def describe_deployment(
-    name: str,
-    namespace: str,
-    ctx: Context = None,
-) -> str:
-    """Describe a deployment with details and recent events.
-
-    Args:
-        name: Name of the deployment to describe
-        namespace: The Kubernetes namespace where the deployment exists
-    """
-    k8s = _get_k8s_client(ctx)
-    describe = k8s.describe_resource("Deployment", name, namespace)
-    return json.dumps(describe.model_dump(), indent=2)
-
-
-async def describe_service(
-    name: str,
-    namespace: str,
-    ctx: Context = None,
-) -> str:
-    """Describe a service with details and recent events.
-
-    Args:
-        name: Name of the service to describe
-        namespace: The Kubernetes namespace where the service exists
-    """
-    k8s = _get_k8s_client(ctx)
-    describe = k8s.describe_resource("Service", name, namespace)
-    return json.dumps(describe.model_dump(), indent=2)
+__all__ = ["register_tools"]

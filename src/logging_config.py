@@ -2,7 +2,7 @@ import contextvars
 import logging
 import logging.config
 from contextvars import Token
-from typing import override
+from typing_extensions import override
 
 
 _correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar(

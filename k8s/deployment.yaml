@@ -30,6 +30,14 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
+          env:
+            - name: NAMESPACE
+              value: "k8s-troubleshooter"
+            - name: LOG_LEVEL
+              value: "INFO"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /health
@@ -60,3 +68,6 @@ spec:
             capabilities:
               drop:
                 - ALL
+      volumes:
+        - name: tmp
+          emptyDir: {}

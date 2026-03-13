@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-troubleshooter-node-access-binding
+subjects:
+- kind: ServiceAccount
+  name: k8s-troubleshooter-sa
+  namespace: k8s-troubleshooter
+roleRef:
+  kind: ClusterRole
+  name: k8s-troubleshooter-node-access
+  apiGroup: rbac.authorization.k8s.io

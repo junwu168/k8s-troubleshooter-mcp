@@ -5,15 +5,12 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from dataclasses import dataclass
 from typing import cast
 
-from kubernetes import client, config  # pyright: ignore[reportMissingTypeStubs]
-from kubernetes.config.config_exception import (  # pyright: ignore[reportMissingTypeStubs]
-    ConfigException,
-)
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 
 from src.config import Settings
 from src.errors import K8sClientError
+from src.k8s_client import K8sClient
 
 
 logger = logging.getLogger(__name__)
@@ -21,52 +18,45 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class AppContext:
-    k8s_client: client.CoreV1Api | None = None
-    api_client: client.ApiClient | None = None
+    k8s_client: K8sClient | None = None
     startup_error: str | None = None
 
 
 async def initialize_k8s_client(settings: Settings) -> AppContext:
     def _initialize() -> AppContext:
-        if settings.KUBECONFIG_PATH:
-            load_kube_config = cast(Callable[..., None], config.load_kube_config)
-            load_kube_config(config_file=settings.KUBECONFIG_PATH)
-        else:
-            try:
-                load_incluster_config = cast(Callable[..., None], config.load_incluster_config)
-                load_incluster_config()
-            except ConfigException:
-                load_kube_config = cast(Callable[..., None], config.load_kube_config)
-                load_kube_config()
+        k8s_client = K8sClient(kubeconfig_path=settings.KUBECONFIG_PATH)
+        if k8s_client.auth_error is not None:
+            raise K8sClientError(k8s_client.auth_error)
 
-        api_client = client.ApiClient()
-        return AppContext(
-            k8s_client=client.CoreV1Api(api_client),
-            api_client=api_client,
-        )
+        return AppContext(k8s_client=k8s_client)
 
     try:
         return await asyncio.to_thread(_initialize)
-    except ConfigException as exc:
-        raise K8sClientError("Unable to load Kubernetes configuration") from exc
+    except K8sClientError:
+        raise
     except Exception as exc:
         raise K8sClientError("Unable to initialize Kubernetes client") from exc
 
 
 async def close_app_context(context: AppContext | None) -> None:
-    if context is None or context.api_client is None:
+    if context is None or context.k8s_client is None:
         return
 
-    await asyncio.to_thread(context.api_client.close)
+    await asyncio.to_thread(context.k8s_client.close)
 
 
 async def check_k8s_connectivity(context: AppContext, namespace: str) -> None:
     if context.k8s_client is None:
         raise K8sClientError(context.startup_error or "Kubernetes client is not initialized")
+    if context.k8s_client.core_v1 is None:
+        raise K8sClientError("Kubernetes core API client is not initialized")
 
     try:
-        list_namespaced_pod = cast(Callable[..., object], context.k8s_client.list_namespaced_pod)
-        await asyncio.to_thread(
+        list_namespaced_pod = cast(
+            Callable[..., object],
+            context.k8s_client.core_v1.list_namespaced_pod,
+        )
+        _ = await asyncio.to_thread(
             list_namespaced_pod,
             namespace=namespace,
             limit=1,
@@ -76,6 +66,30 @@ async def check_k8s_connectivity(context: AppContext, namespace: str) -> None:
         raise K8sClientError(
             f"Kubernetes readiness check failed for namespace '{namespace}'"
         ) from exc
+
+
+def create_mcp_lifespan(
+    settings: Settings,
+) -> Callable[[FastMCP], AbstractAsyncContextManager[AppContext]]:
+    @asynccontextmanager
+    async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
+        try:
+            context = await initialize_k8s_client(settings)
+            logger.info("MCP lifespan initialized", extra={"namespace": settings.NAMESPACE})
+        except K8sClientError as exc:
+            context = AppContext(startup_error=str(exc))
+            logger.warning(
+                "MCP lifespan started without Kubernetes connectivity",
+                extra={"error": str(exc), "namespace": settings.NAMESPACE},
+            )
+
+        try:
+            yield context
+        finally:
+            await close_app_context(context)
+            logger.info("MCP lifespan shutdown completed")
+
+    return lifespan
 
 
 def create_lifespan(

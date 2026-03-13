@@ -1,11 +1,10 @@
 from functools import lru_cache
-from typing import ClassVar, Literal, final
+from typing import ClassVar, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-@final
 class Settings(BaseSettings):
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_file=".env",
@@ -17,7 +16,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
     PORT: int = Field(default=8000, ge=1, le=65535)
     HOST: str = "0.0.0.0"
-    NAMESPACE: str = "default"
+    NAMESPACE: str = "k8s-troubleshooter"
     KUBECONFIG_PATH: str | None = None
 
     @field_validator("LOG_LEVEL", mode="before")

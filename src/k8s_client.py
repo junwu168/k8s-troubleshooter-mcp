@@ -1,4 +1,4 @@
-# pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false, reportUnknownLambdaType=false, reportUnusedCallResult=false, reportAny=false, reportExplicitAny=false
+# pyright: basic, reportMissingTypeStubs=false
 
 from __future__ import annotations
 
@@ -24,14 +24,19 @@ T = TypeVar("T")
 
 
 class K8sClient:
-    def __init__(self) -> None:
+    def __init__(self, kubeconfig_path: str | None = None) -> None:
         self.api_client: client.ApiClient | None = None
         self.core_v1: client.CoreV1Api | None = None
         self.apps_v1: client.AppsV1Api | None = None
         self.auth_error: str | None = None
         self.config_source: str | None = None
+        self.kubeconfig_path = kubeconfig_path
 
         self._load_config()
+
+    def close(self) -> None:
+        if self.api_client is not None:
+            self.api_client.close()
 
     def is_ready(self) -> bool:
         if self.auth_error is not None:
@@ -286,6 +291,15 @@ class K8sClient:
             yaml_content=yaml_content,
         )
 
+    def describe_pod(self, pod_name: str, namespace: str) -> DescribeResponse:
+        return self.describe_resource(kind="pod", name=pod_name, namespace=namespace)
+
+    def describe_deployment(self, name: str, namespace: str) -> DescribeResponse:
+        return self.describe_resource(kind="deployment", name=name, namespace=namespace)
+
+    def describe_service(self, name: str, namespace: str) -> DescribeResponse:
+        return self.describe_resource(kind="service", name=name, namespace=namespace)
+
     def describe_resource(
         self,
         kind: str,
@@ -341,15 +355,23 @@ class K8sClient:
         kubeconfig_error: str | None = None
 
         try:
-            config.load_incluster_config()
-            self.config_source = "in-cluster"
-        except ConfigException as exc:
-            incluster_error = str(exc)
-            try:
-                config.load_kube_config()
+            if self.kubeconfig_path is not None:
+                config.load_kube_config(config_file=self.kubeconfig_path)
                 self.config_source = "kubeconfig"
-            except ConfigException as kube_exc:
-                kubeconfig_error = str(kube_exc)
+            else:
+                config.load_incluster_config()
+                self.config_source = "in-cluster"
+        except ConfigException as exc:
+            if self.kubeconfig_path is not None:
+                incluster_error = "not attempted"
+                kubeconfig_error = str(exc)
+            else:
+                incluster_error = str(exc)
+                try:
+                    config.load_kube_config()
+                    self.config_source = "kubeconfig"
+                except ConfigException as kube_exc:
+                    kubeconfig_error = str(kube_exc)
 
         if self.config_source is None:
             self.auth_error = (

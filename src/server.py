@@ -16,8 +16,9 @@ from typing_extensions import override
 
 from src.config import Settings, get_settings
 from src.errors import ConfigError, K8sClientError
-from src.lifecycle import AppContext, check_k8s_connectivity, create_lifespan
+from src.lifecycle import AppContext, check_k8s_connectivity, create_lifespan, create_mcp_lifespan
 from src.logging_config import configure_logging, reset_correlation_id, set_correlation_id
+from src.tools import register_tools
 
 
 def load_settings() -> Settings:
@@ -37,8 +38,10 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP(
     name="k8s-troubleshooter-mcp",
     json_response=True,
+    lifespan=create_mcp_lifespan(settings),
     streamable_http_path="/",
 )
+register_tools(mcp)
 mcp_http_app = mcp.streamable_http_app()
 
 
@@ -67,7 +70,8 @@ async def health(_: Request) -> JSONResponse:
 
 
 async def ready(request: Request) -> JSONResponse:
-    context = cast(AppContext, request.app.state.context)
+    app = cast(Starlette, request.app)
+    context = cast(AppContext, getattr(app.state, "context"))
 
     try:
         await check_k8s_connectivity(context, settings.NAMESPACE)
